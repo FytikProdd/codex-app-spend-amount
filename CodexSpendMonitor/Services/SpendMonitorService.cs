@@ -7,32 +7,40 @@ namespace CodexSpendMonitor.Services;
 public sealed class SpendMonitorService : IDisposable
 {
     private static readonly Uri OpenRouterModelsUri = new("https://openrouter.ai/api/v1/models");
+    private static readonly TimeSpan AutomaticRefreshDebounce = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan AutomaticRefreshCooldown = TimeSpan.FromSeconds(3);
 
     private readonly HttpClient _httpClient;
-    private readonly string _codexHome;
+    private readonly IReadOnlyList<string> _sessionRoots;
     private readonly List<FileSystemWatcher> _watchers = new();
     private readonly Timer _debounceTimer;
     private readonly object _refreshLock = new();
 
     private Dictionary<string, ModelPricing> _pricingCatalog = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, CachedConversation> _conversationCache = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset? _lastPriceSyncAt;
+    private DateTimeOffset _lastAutomaticRefreshAt = DateTimeOffset.MinValue;
     private string _statusText = "Loading sessions...";
     private bool _isDisposed;
+    private bool _refreshInProgress;
+    private bool _refreshPending;
+    private bool _forceRefreshPending;
 
     public event EventHandler<DashboardSnapshot>? SnapshotUpdated;
 
     public SpendMonitorService()
     {
-        _codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        _sessionRoots = DiscoverSessionRoots();
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CodexSpendMonitor/1.0");
-        _debounceTimer = new Timer(_ => _ = RefreshSessionsAsync(), null, Timeout.Infinite, Timeout.Infinite);
+        _debounceTimer = new Timer(_ => _ = QueueSessionRefreshAsync(forceRefresh: false), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public async Task InitializeAsync()
     {
         await RefreshPricingAsync();
         SetupWatchers();
+        LocalLog.Write("Monitoring session roots: " + string.Join(", ", _sessionRoots));
         _ = Task.Run(PricingRefreshLoopAsync);
     }
 
@@ -84,34 +92,59 @@ public sealed class SpendMonitorService : IDisposable
             _statusText = $"OpenRouter sync failed: {ex.Message}";
         }
 
-        await RefreshSessionsAsync();
+        await QueueSessionRefreshAsync(forceRefresh: true);
     }
 
     public async Task RefreshSessionsAsync()
     {
-        try
+        await QueueSessionRefreshAsync(forceRefresh: true);
+    }
+
+    private async Task QueueSessionRefreshAsync(bool forceRefresh)
+    {
+        lock (_refreshLock)
         {
-            List<ConversationSpendInfo> conversations = new();
-            foreach (string file in EnumerateSessionFiles())
+            _refreshPending = true;
+            _forceRefreshPending |= forceRefresh;
+            if (_refreshInProgress)
             {
-                ConversationSpendInfo? parsed = await Task.Run(() => TryParseConversation(file));
-                if (parsed is not null)
-                {
-                    conversations.Add(parsed);
-                }
+                return;
             }
 
-            conversations.Sort((left, right) => right.UpdatedAt.CompareTo(left.UpdatedAt));
-            PublishSnapshot(new DashboardSnapshot
+            _refreshInProgress = true;
+        }
+
+        try
+        {
+            while (true)
             {
-                Conversations = conversations,
-                TotalCostUsd = conversations.Sum(item => item.TotalCostUsd),
-                ConversationCount = conversations.Count,
-                ResolvedPriceCount = conversations.Count(item => item.HasResolvedPricing),
-                LastPriceSyncAt = _lastPriceSyncAt,
-                PriceSource = OpenRouterModelsUri.ToString(),
-                StatusText = _statusText,
-            });
+                bool forceThisRun;
+                lock (_refreshLock)
+                {
+                    if (!_refreshPending)
+                    {
+                        break;
+                    }
+
+                    _refreshPending = false;
+                    forceThisRun = _forceRefreshPending;
+                    _forceRefreshPending = false;
+                }
+
+                if (!forceThisRun)
+                {
+                    TimeSpan cooldownLeft = AutomaticRefreshCooldown - (DateTimeOffset.UtcNow - _lastAutomaticRefreshAt);
+                    if (cooldownLeft > TimeSpan.Zero)
+                    {
+                        await Task.Delay(cooldownLeft);
+                    }
+
+                    _lastAutomaticRefreshAt = DateTimeOffset.UtcNow;
+                }
+
+                DashboardSnapshot snapshot = await Task.Run(() => BuildSnapshot(forceThisRun));
+                PublishSnapshot(snapshot);
+            }
         }
         catch (Exception ex)
         {
@@ -125,6 +158,20 @@ public sealed class SpendMonitorService : IDisposable
                 PriceSource = OpenRouterModelsUri.ToString(),
                 StatusText = $"Session refresh failed: {ex.Message}",
             });
+        }
+        finally
+        {
+            bool shouldRestart;
+            lock (_refreshLock)
+            {
+                shouldRestart = _refreshPending;
+                _refreshInProgress = false;
+            }
+
+            if (shouldRestart && !_isDisposed)
+            {
+                _ = QueueSessionRefreshAsync(forceRefresh: false);
+            }
         }
     }
 
@@ -161,7 +208,7 @@ public sealed class SpendMonitorService : IDisposable
 
     private void SetupWatchers()
     {
-        foreach (string root in GetSessionRoots())
+        foreach (string root in _sessionRoots)
         {
             if (!Directory.Exists(root))
             {
@@ -187,19 +234,51 @@ public sealed class SpendMonitorService : IDisposable
     {
         lock (_refreshLock)
         {
-            _debounceTimer.Change(350, Timeout.Infinite);
+            _debounceTimer.Change(AutomaticRefreshDebounce, Timeout.InfiniteTimeSpan);
         }
     }
 
-    private IEnumerable<string> GetSessionRoots()
+    private static IReadOnlyList<string> DiscoverSessionRoots()
     {
-        yield return Path.Combine(_codexHome, "sessions");
-        yield return Path.Combine(_codexHome, "archived_sessions");
+        var roots = new List<string>();
+        var uniqueRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        AddDirectRoot(Environment.GetEnvironmentVariable("CODEX_SESSIONS_DIR"));
+        AddDirectRoot(Environment.GetEnvironmentVariable("CODEX_ARCHIVED_SESSIONS_DIR"));
+        AddCodexHome(Environment.GetEnvironmentVariable("CODEX_HOME"));
+        AddCodexHome(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
+
+        return roots;
+
+        void AddCodexHome(string? codexHome)
+        {
+            if (string.IsNullOrWhiteSpace(codexHome))
+            {
+                return;
+            }
+
+            AddDirectRoot(Path.Combine(codexHome, "sessions"));
+            AddDirectRoot(Path.Combine(codexHome, "archived_sessions"));
+        }
+
+        void AddDirectRoot(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            string normalizedPath = NormalizePath(path);
+            if (uniqueRoots.Add(normalizedPath))
+            {
+                roots.Add(normalizedPath);
+            }
+        }
     }
 
     private IEnumerable<string> EnumerateSessionFiles()
     {
-        foreach (string root in GetSessionRoots())
+        foreach (string root in _sessionRoots)
         {
             if (!Directory.Exists(root))
             {
@@ -211,6 +290,66 @@ public sealed class SpendMonitorService : IDisposable
                 yield return file;
             }
         }
+    }
+
+    private DashboardSnapshot BuildSnapshot(bool forceRefresh)
+    {
+        List<ConversationSpendInfo> conversations = new();
+        Dictionary<string, CachedConversation> nextCache = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string file in EnumerateSessionFiles())
+        {
+            try
+            {
+                CachedConversation cachedConversation = GetCachedConversation(file, forceRefresh);
+                nextCache[file] = cachedConversation;
+                if (cachedConversation.Conversation is not null)
+                {
+                    conversations.Add(cachedConversation.Conversation);
+                }
+            }
+            catch (IOException)
+            {
+                // Ignore transient file access issues while Codex is still writing the session file.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Skip inaccessible files rather than failing the full dashboard refresh.
+            }
+        }
+
+        _conversationCache = nextCache;
+        conversations.Sort((left, right) => right.UpdatedAt.CompareTo(left.UpdatedAt));
+
+        return new DashboardSnapshot
+        {
+            Conversations = conversations,
+            TotalCostUsd = conversations.Sum(item => item.TotalCostUsd),
+            ConversationCount = conversations.Count,
+            ResolvedPriceCount = conversations.Count(item => item.HasResolvedPricing),
+            LastPriceSyncAt = _lastPriceSyncAt,
+            PriceSource = OpenRouterModelsUri.ToString(),
+            StatusText = _statusText,
+        };
+    }
+
+    private CachedConversation GetCachedConversation(string filePath, bool forceRefresh)
+    {
+        var fileInfo = new FileInfo(filePath);
+        long length = fileInfo.Exists ? fileInfo.Length : 0;
+        DateTimeOffset lastWriteUtc = fileInfo.Exists
+            ? fileInfo.LastWriteTimeUtc
+            : DateTimeOffset.MinValue;
+
+        if (!forceRefresh &&
+            _conversationCache.TryGetValue(filePath, out CachedConversation? cachedConversation) &&
+            cachedConversation.Length == length &&
+            cachedConversation.LastWriteUtc == lastWriteUtc)
+        {
+            return cachedConversation;
+        }
+
+        return new CachedConversation(lastWriteUtc, length, TryParseConversation(filePath));
     }
 
     private ConversationSpendInfo? TryParseConversation(string filePath)
@@ -321,6 +460,12 @@ public sealed class SpendMonitorService : IDisposable
         {
             return null;
         }
+    }
+
+    private static string NormalizePath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private void ParseEventMessage(
@@ -457,5 +602,19 @@ public sealed class SpendMonitorService : IDisposable
         public string Name { get; init; } = string.Empty;
         public decimal Prompt { get; init; }
         public decimal Completion { get; init; }
+    }
+
+    private sealed class CachedConversation
+    {
+        public CachedConversation(DateTimeOffset lastWriteUtc, long length, ConversationSpendInfo? conversation)
+        {
+            LastWriteUtc = lastWriteUtc;
+            Length = length;
+            Conversation = conversation;
+        }
+
+        public DateTimeOffset LastWriteUtc { get; }
+        public long Length { get; }
+        public ConversationSpendInfo? Conversation { get; }
     }
 }

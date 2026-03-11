@@ -67,3 +67,16 @@ dotnet publish .\CodexSpendMonitor\CodexSpendMonitor.csproj -c Release -o .\dist
 - [OpenRouter Models API](https://openrouter.ai/api/v1/models)
 
 Если модель из сессии не удалось сопоставить с записью OpenRouter, чат всё равно отображается в интерфейсе, но цена для него помечается как неподтянутая.
+
+## Поиск папок сессий
+
+По умолчанию приложение отслеживает:
+
+- `~/.codex/sessions`
+- `~/.codex/archived_sessions`
+
+Если на конкретном компьютере Codex хранит сессии в другом месте, путь можно переопределить через переменные окружения:
+
+- `CODEX_HOME` - родительская папка, внутри которой лежат `sessions/` и `archived_sessions/`
+- `CODEX_SESSIONS_DIR` - явный путь к папке активных сессий
+- `CODEX_ARCHIVED_SESSIONS_DIR` - явный путь к папке архивных сессий
