@@ -1,6 +1,6 @@
 # Codex Cost Tracker
 
-[English version](./README.md)
+[English version](./README.md) | [Español](./README.es.md) | [简体中文](./README.zh-CN.md) | [हिन्दी](./README.hi.md)
 
 Компактное WinUI 3 приложение для Windows, которое отслеживает расходы Codex/Codex App по каждому чату и показывает примерную стоимость почти в реальном времени.
 
