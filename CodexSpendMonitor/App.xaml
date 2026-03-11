@@ -1,0 +1,41 @@
+<Application
+    x:Class="CodexSpendMonitor.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedTheme="Light">
+    <Application.Resources>
+        <ResourceDictionary>
+            <Color x:Key="ShellSurfaceColor">#FFF7F1E7</Color>
+            <Color x:Key="ShellPanelColor">#FFFDF8F1</Color>
+            <Color x:Key="ShellAccentColor">#FFB85C38</Color>
+            <Color x:Key="ShellAccentSoftColor">#FFF2D6C7</Color>
+            <Color x:Key="ShellTextColor">#FF2C221C</Color>
+            <Color x:Key="ShellMutedTextColor">#FF6E5A4A</Color>
+            <Color x:Key="ShellBorderColor">#1A6E4A2C</Color>
+            <Color x:Key="ShellButtonColor">#FFFFF5EC</Color>
+            <Color x:Key="ShellButtonBorderColor">#336E4A2C</Color>
+
+            <SolidColorBrush x:Key="ShellSurfaceBrush" Color="{StaticResource ShellSurfaceColor}" />
+            <SolidColorBrush x:Key="ShellPanelBrush" Color="{StaticResource ShellPanelColor}" />
+            <SolidColorBrush x:Key="ShellAccentBrush" Color="{StaticResource ShellAccentColor}" />
+            <SolidColorBrush x:Key="ShellAccentSoftBrush" Color="{StaticResource ShellAccentSoftColor}" />
+            <SolidColorBrush x:Key="ShellTextBrush" Color="{StaticResource ShellTextColor}" />
+            <SolidColorBrush x:Key="ShellMutedTextBrush" Color="{StaticResource ShellMutedTextColor}" />
+            <SolidColorBrush x:Key="ShellBorderBrush" Color="{StaticResource ShellBorderColor}" />
+            <SolidColorBrush x:Key="ShellButtonBrush" Color="{StaticResource ShellButtonColor}" />
+            <SolidColorBrush x:Key="ShellButtonBorderBrush" Color="{StaticResource ShellButtonBorderColor}" />
+
+            <Style x:Key="ShellButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="{StaticResource ShellButtonBrush}" />
+                <Setter Property="Foreground" Value="{StaticResource ShellTextBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource ShellButtonBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="Padding" Value="14,10" />
+                <Setter Property="MinHeight" Value="44" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

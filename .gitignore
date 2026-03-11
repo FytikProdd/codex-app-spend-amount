@@ -1,0 +1,29 @@
+# Build outputs
+**/bin/
+**/obj/
+dist/
+dumps/
+artifacts/
+
+# Logs
+*.log
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Windows packaging
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+*.msixupload
+
+# OS files
+Thumbs.db
+.DS_Store
