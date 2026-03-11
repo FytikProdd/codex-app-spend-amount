@@ -33,10 +33,36 @@ public static class Program
         catch (Exception ex)
         {
             LocalLog.Write(ex, "Program.Main failed");
+            ShowStartupError(ex);
             throw;
         }
     }
 
     [DllImport("Microsoft.ui.xaml.dll")]
     private static extern void XamlCheckProcessRequirements();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
+
+    private static void ShowStartupError(Exception ex)
+    {
+        string logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CodexSpendMonitor",
+            "startup.log");
+
+        string message =
+            "Codex Spend Popout could not start." + Environment.NewLine + Environment.NewLine +
+            ex.Message + Environment.NewLine + Environment.NewLine +
+            $"Log: {logPath}";
+
+        try
+        {
+            MessageBox(IntPtr.Zero, message, "Codex Spend Popout", 0x00000010);
+        }
+        catch
+        {
+            // Best-effort only.
+        }
+    }
 }
