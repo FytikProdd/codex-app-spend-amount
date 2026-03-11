@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using CodexSpendMonitor.Models;
 
@@ -25,6 +26,7 @@ public sealed class SpendMonitorService : IDisposable
     private bool _refreshInProgress;
     private bool _refreshPending;
     private bool _forceRefreshPending;
+    private string _lastPublishedSnapshotFingerprint = string.Empty;
 
     public event EventHandler<DashboardSnapshot>? SnapshotUpdated;
 
@@ -143,7 +145,7 @@ public sealed class SpendMonitorService : IDisposable
                 }
 
                 DashboardSnapshot snapshot = await Task.Run(() => BuildSnapshot(forceThisRun));
-                PublishSnapshot(snapshot);
+                PublishSnapshotIfChanged(snapshot);
             }
         }
         catch (Exception ex)
@@ -518,6 +520,49 @@ public sealed class SpendMonitorService : IDisposable
         return _pricingCatalog.Values.FirstOrDefault(item =>
             item.Id.EndsWith("/" + model, StringComparison.OrdinalIgnoreCase) ||
             item.CanonicalSlug.EndsWith("/" + model, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void PublishSnapshotIfChanged(DashboardSnapshot snapshot)
+    {
+        string fingerprint = BuildSnapshotFingerprint(snapshot);
+
+        lock (_refreshLock)
+        {
+            if (string.Equals(_lastPublishedSnapshotFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastPublishedSnapshotFingerprint = fingerprint;
+        }
+
+        PublishSnapshot(snapshot);
+    }
+
+    private static string BuildSnapshotFingerprint(DashboardSnapshot snapshot)
+    {
+        var builder = new StringBuilder(capacity: 1024);
+        builder.Append(snapshot.TotalCostUsd.ToString(CultureInfo.InvariantCulture)).Append('|')
+            .Append(snapshot.ConversationCount).Append('|')
+            .Append(snapshot.ResolvedPriceCount).Append('|')
+            .Append(snapshot.LastPriceSyncAt?.UtcTicks ?? 0).Append('|')
+            .Append(snapshot.StatusText);
+
+        foreach (ConversationSpendInfo conversation in snapshot.Conversations)
+        {
+            builder.Append('\n')
+                .Append(conversation.ConversationId).Append('|')
+                .Append(conversation.UpdatedAt.UtcTicks).Append('|')
+                .Append(conversation.TotalCostUsd.ToString(CultureInfo.InvariantCulture)).Append('|')
+                .Append(conversation.InputTokens).Append('|')
+                .Append(conversation.CachedInputTokens).Append('|')
+                .Append(conversation.OutputTokens).Append('|')
+                .Append(conversation.ReasoningTokens).Append('|')
+                .Append(conversation.ResolvedModelId).Append('|')
+                .Append(conversation.PricingNote);
+        }
+
+        return builder.ToString();
     }
 
     private void PublishSnapshot(DashboardSnapshot snapshot)
